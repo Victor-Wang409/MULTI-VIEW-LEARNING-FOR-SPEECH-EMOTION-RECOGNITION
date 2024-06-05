@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader, Dataset
 
 # 定义设备
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-
+print(device)
 
 # 数据预处理
 class AudioPreprocessor:
@@ -158,7 +158,7 @@ class EmotionDataset(Dataset):
 
 # 示例数据
 csv_file = "data.csv"
-audio_dir = "./data/iemocap"
+audio_dir = "./iemocap"
 max_length = 16000  # 根据你的音频长度进行调整
 train_dataset = EmotionDataset(csv_file, audio_dir, max_length=max_length)
 train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, collate_fn=pad_sequence)

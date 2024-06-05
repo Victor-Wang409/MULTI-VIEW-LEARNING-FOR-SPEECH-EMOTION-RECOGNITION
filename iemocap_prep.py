@@ -5,7 +5,6 @@ import pandas as pd
 csv_file = pd.read_csv("./data/iemocap_new.csv")
 files = csv_file["FileName"]
 
-# root = "./IEMOCAP_full_release/"
 root  ="./IEMOCAP/"
 destination = "./data/iemocap/"
 os.makedirs(destination, exist_ok=True)
