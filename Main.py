@@ -2,9 +2,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torchaudio
-from transformers import Wav2Vec2Model, Wav2Vec2Processor
+from transformers import Wav2Vec2Model
 import pandas as pd
 from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
 
 # 数据预处理函数
 def preprocess_audio(audio_path, max_length=16000):
@@ -15,6 +16,8 @@ def preprocess_audio(audio_path, max_length=16000):
         pad_amount = max_length - waveform.shape[1]
         waveform = torch.nn.functional.pad(waveform, (0, pad_amount))
     return waveform.squeeze()
+
+
 
 # 自定义数据集类
 class EmotionDataset(Dataset):
@@ -88,35 +91,48 @@ def ccc_loss(pred, target):
     ccc = (2 * covariance) / (var_pred + var_target + (mean_pred - mean_target) ** 2)
     return 1 - ccc  # 1 - ccc 为了使其成为一个可以优化的损失
 
+def CCC(pred, target):
+    mean_pred = torch.mean(pred, dim=0)
+    mean_target = torch.mean(target, dim=0)
+    covariance = torch.mean((pred - mean_pred) * (target - mean_target), dim=0)
+    var_pred = torch.mean((pred - mean_pred) ** 2, dim=0)
+    var_target = torch.mean((target - mean_target) ** 2, dim=0)
+    ccc = (2 * covariance) / (var_pred + var_target + (mean_pred - mean_target) ** 2)
+    return ccc  # 返回平均损失和每个维度的CCC值
+
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
-# 训练循环
+# 训练
 def train(model, train_loader, valid_loader, epochs):
-    model.train()
     for epoch in range(epochs):
+        model.train()
         total_loss = 0
-        for batch in train_loader:
-            inputs, labels_emotion, labels_sentiment, labels_dimension = batch
-            inputs = inputs.to(device)
-            labels_emotion = labels_emotion.to(device)
-            labels_sentiment = labels_sentiment.to(device)
-            labels_dimension = labels_dimension.to(device)
+        with tqdm(train_loader, unit="batch") as tepoch:
+            for batch in tepoch:
+                tepoch.set_description(f"Epoch {epoch+1}")
+                inputs, labels_emotion, labels_sentiment, labels_dimension = batch
+                inputs = inputs.to(device)
+                labels_emotion = labels_emotion.to(device)
+                labels_sentiment = labels_sentiment.to(device)
+                labels_dimension = labels_dimension.to(device)
 
-            optimizer.zero_grad()
-            output_emotion, output_sentiment, output_dimension = model(inputs)
-            loss_emotion = nn.CrossEntropyLoss()(output_emotion, labels_emotion)
-            loss_sentiment = nn.CrossEntropyLoss()(output_sentiment, labels_sentiment)
-            loss_dimension = ccc_loss(output_dimension, labels_dimension)
-            loss = loss_emotion + loss_sentiment + loss_dimension
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
+                optimizer.zero_grad()
+                output_emotion, output_sentiment, output_dimension = model(inputs)
+                loss_emotion = nn.CrossEntropyLoss()(output_emotion, labels_emotion)
+                loss_sentiment = nn.CrossEntropyLoss()(output_sentiment, labels_sentiment)
+                loss_dimension = ccc_loss(output_dimension, labels_dimension)
+                loss = loss_emotion + loss_sentiment + loss_dimension
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+                tepoch.set_postfix(loss=total_loss/len(train_loader))
         print(f'Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(train_loader)}')
 
         model.eval()
-        with torch.no_grad():
-            valid_loss = 0
-            for batch in valid_loader:
+        valid_loss = 0
+        total_ccc = torch.zeros(3, device=device)
+        with tqdm(valid_loader, unit="batch") as vepoch:
+            for batch in vepoch:
                 inputs, labels_emotion, labels_sentiment, labels_dimension = batch
                 inputs = inputs.to(device)
                 labels_emotion = labels_emotion.to(device)
@@ -127,35 +143,16 @@ def train(model, train_loader, valid_loader, epochs):
                 loss_emotion = nn.CrossEntropyLoss()(output_emotion, labels_emotion)
                 loss_sentiment = nn.CrossEntropyLoss()(output_sentiment, labels_sentiment)
                 loss_dimension = ccc_loss(output_dimension, labels_dimension)
+                ccc = CCC(output_dimension, labels_dimension)
                 loss = loss_emotion + loss_sentiment + loss_dimension
                 valid_loss += loss.item()
-            print(f'Validation Loss: {valid_loss/len(valid_loader)}')
-        model.train()
-
-# 评估模型
-def evaluate(model, test_loader):
-    model.eval()
-    with torch.no_grad():
-        total_loss = 0
-        for batch in test_loader:
-            inputs, labels_emotion, labels_sentiment, labels_dimension = batch
-            inputs = inputs.to(device)
-            labels_emotion = labels_emotion.to(device)
-            labels_sentiment = labels_sentiment.to(device)
-            labels_dimension = labels_dimension.to(device)
-
-            output_emotion, output_sentiment, output_dimension = model(inputs)
-            loss_emotion = nn.CrossEntropyLoss()(output_emotion, labels_emotion)
-            loss_sentiment = nn.CrossEntropyLoss()(output_sentiment, labels_sentiment)
-            loss_dimension = ccc_loss(output_dimension, labels_dimension)
-            loss = loss_emotion + loss_sentiment + loss_dimension
-            total_loss += loss.item()
-        print(f'Test Loss: {total_loss/len(test_loader)}')
+                total_ccc += ccc.detach()
+                vepoch.set_postfix(loss=valid_loss/len(valid_loader), ccc=total_ccc.cpu().numpy()/(len(vepoch)))
+        print(f'Validation Loss: {valid_loss/len(valid_loader)}')
+        print(f'Validation CCC (Valence, Arousal, Dominance): {tuple(total_ccc.cpu().numpy()/len(valid_loader))}')
 
 # 训练模型
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+# print(torch.device('mps' if torch.backends.mps.is_available() else 'cpu'))
 model.to(device)
 train(model, train_loader, valid_loader, epochs=10)
-
-# 评估模型
-evaluate(model, test_loader)
